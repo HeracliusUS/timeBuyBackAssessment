@@ -11,7 +11,7 @@
  * - Lead capture on download
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useAssessment } from '@/contexts/AssessmentContext';
 import { Button } from '@/components/ui/button';
 import { motion } from 'framer-motion';
@@ -40,6 +40,14 @@ import {
 } from 'lucide-react';
 import ScoreRing from './ScoreRing';
 import { generateExportJSON, generateExportCSVRow, type Answers, type QualificationStatus } from '@/lib/scoringEngine';
+import {
+  trackResultsViewed,
+  trackLead,
+  trackDownloadResults,
+  trackResultsCtaClick,
+  trackAssessmentRetaken,
+  clarityTag,
+} from '@/lib/analytics';
 
 const RESULTS_IMG = 'https://private-us-east-1.manuscdn.com/sessionFile/d4PlRtWykV7og00LcTCFEV/sandbox/U7FGakhGmVAmzeN42yTKFY-img-2_1771081697000_na1fn_cmVzdWx0cy1jZWxlYnJhdGlvbg.png?x-oss-process=image/resize,w_1920,h_1920/format,webp/quality,q_80&Expires=1798761600&Policy=eyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly9wcml2YXRlLXVzLWVhc3QtMS5tYW51c2Nkbi5jb20vc2Vzc2lvbkZpbGUvZDRQbFJ0V3lrVjdvZzAwTGNUQ0ZFVi9zYW5kYm94L1U3Rkdha2hHbVZBbXplTjQyeVRLRlktaW1nLTJfMTc3MTA4MTY5NzAwMF9uYTFmbl9jbVZ6ZFd4MGN5MWpaV3hsWW5KaGRHbHZiZy5wbmc~eC1vc3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUsd18xOTIwLGhfMTkyMC9mb3JtYXQsd2VicC9xdWFsaXR5LHFfODAiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3OTg3NjE2MDB9fX1dfQ__&Key-Pair-Id=K2HSFNDJXOU9YS&Signature=QlbGmvB2UDLZy8muKGdg2~m5T7HWesuBX432FnV3tkkLpoDkeOvydTXDTXP5K6YXbFI4LkpmAHPSp-uhZU6S7MX~OPAKry6ak1KSb3BAnMmu5vxk7gamK95BvqwJ43FhJzWWCQYpEvCjqqSYvkBKZQxg1amDXbGyqsGar7aHoJGy9wrJHUQFVstin2GhVI5~cekAQpNA2U8qoVMone6b~Ja438~kRJJnoWEEJus3I8lBm1q9aWE8w1goR9Gv6YY7w1hYUY63lyeYE5I1yq2SFXE4HkKm2giee4CwfPMRg6vqN2ntAMJVN1hlqh6ApZFAxOVB4SUEJHKzmaOM0jXbJA__';
 
@@ -308,6 +316,7 @@ const handleSubmit = async (e: React.FormEvent) => {
 
     if (response.ok) {
       localStorage.setItem("ava_last_capture", JSON.stringify(captureData));
+      trackLead({ context, qualification_status: qualificationStatus });
     } else {
       console.error("Server Error:", response.status, response.statusText);
     }
@@ -433,6 +442,19 @@ export default function ResultsPage() {
   const [showEmailModal, setShowEmailModal] = useState(false);
   const [emailModalContext, setEmailModalContext] = useState<'qualification' | 'download'>('qualification');
 
+  // Analytics: results viewed (+ tag Clarity recordings by qualification/outcome).
+  useEffect(() => {
+    if (!results) return;
+    trackResultsViewed({
+      time_buyback_score: results.timeBuybackScore,
+      readiness_score: results.avaReadinessScore,
+      qualification_status: results.qualificationStatus,
+      archetype: results.outcome.archetype,
+    });
+    clarityTag('qualification_status', results.qualificationStatus);
+    clarityTag('assessment_outcome', results.outcome.id);
+  }, [results]);
+
   if (!results) return null;
 
   const {
@@ -498,8 +520,9 @@ export default function ResultsPage() {
 const handleDownloadWithCapture = (format: 'pdf' | 'json' | 'csv') => {
   const lastCapture = localStorage.getItem('ava_last_capture');
   if (lastCapture) {
+    trackDownloadResults({ format, qualification_status: qualificationStatus });
     if (format === 'pdf') {
-      window.print(); 
+      window.print();
     } else if (format === 'json') {
       handleDownloadJSON();
     } else if (format === 'csv') {
@@ -507,11 +530,16 @@ const handleDownloadWithCapture = (format: 'pdf' | 'json' | 'csv') => {
     }
   } else {
     setEmailModalContext('download');
-    setShowEmailModal(true); 
+    setShowEmailModal(true);
   }
 };
 
   const handlePrimaryCta = () => {
+    trackResultsCtaClick({
+      cta_id: 'results_primary',
+      qualification_status: qualificationStatus,
+      link_url: qualCopy.primaryHref,
+    });
     if (qualCopy.primaryHref) {
       window.open(qualCopy.primaryHref, '_blank');
     } else {
@@ -521,7 +549,18 @@ const handleDownloadWithCapture = (format: 'pdf' | 'json' | 'csv') => {
   };
 
   const handleSecondaryCta = () => {
-    if (qualificationStatus === 'NOT_QUALIFIED' && qualCopy.secondaryCta?.includes('Retake')) {
+    const isRetake =
+      qualificationStatus === 'NOT_QUALIFIED' && !!qualCopy.secondaryCta?.includes('Retake');
+    trackResultsCtaClick({
+      cta_id: isRetake ? 'results_retake' : 'results_secondary',
+      cta_text: qualCopy.secondaryCta,
+      qualification_status: qualificationStatus,
+    });
+    if (isRetake) {
+      trackAssessmentRetaken({
+        previous_time_buyback_score: timeBuybackScore,
+        previous_readiness_score: avaReadinessScore,
+      });
       resetAssessment();
     } else {
       window.open('https://scheduler.zoom.us/eric-lee-usher', '_blank');
@@ -1131,7 +1170,10 @@ const handleDownloadWithCapture = (format: 'pdf' | 'json' | 'csv') => {
 
             <Button
               variant="outline"
-              onClick={() => window.print()}
+              onClick={() => {
+                trackDownloadResults({ format: 'pdf', qualification_status: qualificationStatus });
+                window.print();
+              }}
               className="border-border text-foreground/70 hover:bg-secondary/50 rounded-xl"
             >
               <Printer className="w-4 h-4 mr-2" />
@@ -1165,7 +1207,13 @@ const handleDownloadWithCapture = (format: 'pdf' | 'json' | 'csv') => {
           {/* Retake */}
           <div className="text-center pt-4">
             <button
-              onClick={resetAssessment}
+              onClick={() => {
+                trackAssessmentRetaken({
+                  previous_time_buyback_score: timeBuybackScore,
+                  previous_readiness_score: avaReadinessScore,
+                });
+                resetAssessment();
+              }}
               className="text-sm text-muted-foreground hover:text-foreground underline underline-offset-4 transition-colors"
             >
               Retake the assessment

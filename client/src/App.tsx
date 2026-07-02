@@ -7,7 +7,8 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 import { AssessmentProvider } from "./contexts/AssessmentContext";
 import Home from "./pages/Home";
 import { useEffect } from "react";
-import { trackPageLanded } from "./lib/analytics";
+import { trackPageLanded, initClarity, getStoredConsent } from "./lib/analytics";
+import ConsentBanner from "./components/ConsentBanner";
 
 
 const base = "/TimeBuyBackAssessment";
@@ -27,6 +28,8 @@ function Router() {
 function App() {
   useEffect(() => {
     trackPageLanded();
+    // US-default granted: load Clarity unless the visitor previously opted out.
+    if (getStoredConsent() !== "denied") initClarity();
   }, []);
 
   return (
@@ -36,6 +39,7 @@ function App() {
           <AssessmentProvider>
             <Toaster />
             <Router />
+            <ConsentBanner />
           </AssessmentProvider>
         </TooltipProvider>
       </ThemeProvider>

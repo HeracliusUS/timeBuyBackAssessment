@@ -4,10 +4,18 @@
 // - hasSavedProgress flag for resume/reset flow on WelcomePage
 // ============================================================
 
-import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect, useRef, type ReactNode } from 'react';
 import { sections, type Section } from '@/lib/assessmentData';
 import { computeAllResults, type Answers, type AssessmentResults } from '@/lib/scoringEngine';
-import { trackEvent } from '@/lib/analytics';
+import {
+  trackAssessmentStarted,
+  trackStepView,
+  trackStepComplete,
+  trackStepBack,
+  trackAssessmentCompleted,
+  initAbandonmentTracking,
+  type AbandonState,
+} from '@/lib/analytics';
 
 const STORAGE_KEY_ANSWERS = 'ava_assessment_answers';
 const STORAGE_KEY_SECTION = 'ava_assessment_section';
@@ -56,6 +64,18 @@ export function AssessmentProvider({ children }: { children: ReactNode }) {
   const [answers, setAnswers] = useState<Answers>({});
   const [results, setResults] = useState<AssessmentResults | null>(null);
 
+  // --- analytics refs (funnel timing + abandonment, no re-renders) ---
+  const startedAtRef = useRef<number | null>(null);
+  const stepEnteredAtRef = useRef<number>(Date.now());
+  const furthestIndexRef = useRef<number>(0);
+  const completedRef = useRef<boolean>(false);
+  const startedFiredRef = useRef<boolean>(false);
+  const resumedRef = useRef<boolean>(false);
+  const answersRef = useRef<Answers>({});
+  const currentSectionIndexRef = useRef<number>(0);
+  answersRef.current = answers;
+  currentSectionIndexRef.current = currentSectionIndex;
+
   // Check for saved progress on mount
   const savedAnswers = loadFromStorage<Answers>(STORAGE_KEY_ANSWERS);
   const savedSection = loadFromStorage<number>(STORAGE_KEY_SECTION);
@@ -77,6 +97,41 @@ export function AssessmentProvider({ children }: { children: ReactNode }) {
       localStorage.setItem(STORAGE_KEY_SECTION, JSON.stringify(currentSectionIndex));
     }
   }, [currentSectionIndex, view]);
+
+  // Analytics: fire assessment_started once, and a step_view whenever the active
+  // section changes (entry + every navigation). Resets stepEnteredAt for timing.
+  useEffect(() => {
+    if (view !== 'assessment') return;
+    const s = sections[currentSectionIndex];
+    if (!s) return;
+    if (!startedFiredRef.current) {
+      startedFiredRef.current = true;
+      startedAtRef.current = Date.now();
+      trackAssessmentStarted({ resumed: resumedRef.current, entry_step_id: s.id });
+    }
+    stepEnteredAtRef.current = Date.now();
+    if (currentSectionIndex > furthestIndexRef.current) furthestIndexRef.current = currentSectionIndex;
+    trackStepView({
+      step_id: s.id,
+      step_index: currentSectionIndex + 1,
+      step_name: s.title,
+      question_count: s.questions.length,
+    });
+  }, [view, currentSectionIndex]);
+
+  // Analytics: detect abandonment (left mid-funnel before completing).
+  useEffect(() => {
+    return initAbandonmentTracking(
+      (): AbandonState => ({
+        startedAt: startedAtRef.current,
+        completed: completedRef.current,
+        lastStepId: sections[currentSectionIndexRef.current]?.id ?? '',
+        lastStepIndex: currentSectionIndexRef.current + 1,
+        furthestIndex: furthestIndexRef.current + 1,
+        answeredCount: Object.keys(answersRef.current).length,
+      }),
+    );
+  }, []);
 
   const currentSection = sections[currentSectionIndex];
   const totalSections = sections.length;
@@ -106,14 +161,39 @@ export function AssessmentProvider({ children }: { children: ReactNode }) {
   });
 
   const goNext = useCallback(() => {
+    // Analytics: complete the current step (with time-on-step + answered count).
+    const s = sections[currentSectionIndex];
+    const timeOnStep = Math.round((Date.now() - stepEnteredAtRef.current) / 1000);
+    const answersCount = s.questions.filter((q) => {
+      const a = answersRef.current[q.qId];
+      return Array.isArray(a) ? a.length > 0 : !!a;
+    }).length;
+    trackStepComplete({
+      step_id: s.id,
+      step_index: currentSectionIndex + 1,
+      step_name: s.title,
+      time_on_step: timeOnStep,
+      answers_count: answersCount,
+    });
+
     if (currentSectionIndex < totalSections - 1) {
       setCurrentSectionIndex((i) => i + 1);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } else {
-      // Last section — compute results
+      // Last section — compute results + fire the completion conversion.
       const r = computeAllResults(answers);
       setResults(r);
-      trackEvent('see_results_clicked');
+      completedRef.current = true;
+      trackAssessmentCompleted({
+        total_steps: totalSections,
+        time_in_assessment: startedAtRef.current
+          ? Math.round((Date.now() - startedAtRef.current) / 1000)
+          : 0,
+        time_buyback_score: r.timeBuybackScore,
+        readiness_score: r.avaReadinessScore,
+        qualification_status: r.qualificationStatus,
+        outcome_id: r.outcome.id,
+      });
       setView('results');
       // Clear saved progress on completion
       localStorage.removeItem(STORAGE_KEY_ANSWERS);
@@ -124,6 +204,14 @@ export function AssessmentProvider({ children }: { children: ReactNode }) {
 
   const goPrev = useCallback(() => {
     if (currentSectionIndex > 0) {
+      const from = sections[currentSectionIndex];
+      const to = sections[currentSectionIndex - 1];
+      trackStepBack({
+        from_step_id: from.id,
+        to_step_id: to.id,
+        from_index: currentSectionIndex + 1,
+        to_index: currentSectionIndex,
+      });
       setCurrentSectionIndex((i) => i - 1);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
@@ -138,6 +226,7 @@ export function AssessmentProvider({ children }: { children: ReactNode }) {
    * Resume from saved progress — hydrate answers + section index from localStorage.
    */
   const resumeAssessment = useCallback(() => {
+    resumedRef.current = true;
     const stored = loadFromStorage<Answers>(STORAGE_KEY_ANSWERS);
     const storedSection = loadFromStorage<number>(STORAGE_KEY_SECTION);
     if (stored && Object.keys(stored).length > 0) {
@@ -160,6 +249,12 @@ export function AssessmentProvider({ children }: { children: ReactNode }) {
     setCurrentSectionIndex(0);
     setAnswers({});
     setResults(null);
+    // Reset analytics funnel state so a fresh "start over" is a new assessment_started.
+    startedFiredRef.current = false;
+    startedAtRef.current = null;
+    completedRef.current = false;
+    furthestIndexRef.current = 0;
+    resumedRef.current = false;
     localStorage.removeItem(STORAGE_KEY_ANSWERS);
     localStorage.removeItem(STORAGE_KEY_SECTION);
     window.scrollTo({ top: 0 });

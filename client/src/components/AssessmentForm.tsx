@@ -7,6 +7,7 @@
 
 import { useEffect } from 'react';
 import { useAssessment } from '@/contexts/AssessmentContext';
+import { trackValidationError } from '@/lib/analytics';
 import { Button } from '@/components/ui/button';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowLeft, ArrowRight, Check } from 'lucide-react';
@@ -283,8 +284,23 @@ export default function AssessmentForm() {
             </Button>
 
             <Button
-              onClick={goNext}
-              disabled={!canAdvance}
+              onClick={() => {
+                if (!canAdvance) {
+                  const missing = currentSection.questions.filter((q) => {
+                    if (!q.required) return false;
+                    const a = answers[q.qId];
+                    return !a || (Array.isArray(a) && a.length === 0) || a === '';
+                  });
+                  trackValidationError({
+                    step_id: currentSection.id,
+                    step_index: currentSectionIndex + 1,
+                    missing_count: missing.length,
+                  });
+                  return;
+                }
+                goNext();
+              }}
+              aria-disabled={!canAdvance}
               className={cn(
                 'px-8 py-5 rounded-xl font-medium transition-all duration-300',
                 canAdvance
