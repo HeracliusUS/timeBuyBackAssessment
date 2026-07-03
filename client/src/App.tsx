@@ -7,7 +7,7 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 import { AssessmentProvider } from "./contexts/AssessmentContext";
 import Home from "./pages/Home";
 import { useEffect } from "react";
-import { trackPageLanded, initClarity, getStoredConsent } from "./lib/analytics";
+import { trackPageLanded, initClarity, getStoredConsent, initClickTracking } from "./lib/analytics";
 import ConsentBanner from "./components/ConsentBanner";
 
 
@@ -30,6 +30,8 @@ function App() {
     trackPageLanded();
     // US-default granted: load Clarity unless the visitor previously opted out.
     if (getStoredConsent() !== "denied") initClarity();
+    // Catch-all: fire element_click for every button/link (returns cleanup).
+    return initClickTracking();
   }, []);
 
   return (

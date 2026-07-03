@@ -289,3 +289,25 @@ export function clarityConsent(granted = true) {
     window.clarity('consent', granted);
   }
 }
+
+/* --------------------------------------------------------------------------
+ * Catch-all click tracking — fires element_click for ANY button/link (100% coverage).
+ * The funnel/step events still fire their own specific events; this is the safety net.
+ * ------------------------------------------------------------------------ */
+export function initClickTracking(): () => void {
+  if (typeof document === 'undefined') return () => {};
+  const handler = (e: MouseEvent) => {
+    const target = e.target as HTMLElement | null;
+    const el = target?.closest?.('a, button, [role="button"]') as HTMLElement | null;
+    if (!el) return;
+    const href = (el as HTMLAnchorElement).href || '';
+    const text = (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 100);
+    trackEvent('element_click', {
+      element_type: el.tagName === 'A' ? 'link' : 'button',
+      element_text: text || undefined,
+      link_url: href || undefined,
+    });
+  };
+  document.addEventListener('click', handler, true);
+  return () => document.removeEventListener('click', handler, true);
+}
