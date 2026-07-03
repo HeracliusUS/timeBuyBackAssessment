@@ -72,7 +72,7 @@ Consent default (granted, US) is set in `index.html` before `gtag('config')`, ho
 
 ## Security note (pre-existing, not analytics)
 
-`server/index.ts` contains a hardcoded Notion token + database ID, and the Notion endpoint is hardcoded in `ResultsPage.tsx`. Move these to environment variables before broader release. (Flagged because it sits next to lead capture; the GA4/Clarity IDs are public by design and safe to commit.)
+`server/index.ts` contains a hardcoded Notion token + database ID, and the Notion endpoint is hardcoded in `ResultsPage.tsx`. Move these to environment variables before broader release, then rotate the token (it's in git history). Deliberately deferred on 2026-07-03. (Flagged because it sits next to lead capture; the GA4/Clarity IDs are public by design and safe to commit.)
 
 ## QA checklist (run after deploy / `pnpm dev`)
 
